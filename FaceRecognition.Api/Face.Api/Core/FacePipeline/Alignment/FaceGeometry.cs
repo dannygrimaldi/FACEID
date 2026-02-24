@@ -21,14 +21,18 @@ namespace Face.Api.Core.FacePipeline.Alignment
 
             float size = Math.Max(maxX - minX, maxY - minY);
 
-            // 🔥 Margen ArcFace real
-            size *= 2.2f;
+            // 🔥 margen ArcFace óptimo
+            size *= 2.6f;
+
+            // 🔥 pequeño offset vertical (ArcFace bias)
+            cy += size * 0.05f;
 
             float x = cx - size / 2;
             float y = cy - size / 2;
 
             x = Math.Clamp(x, 0, imgW - 1);
             y = Math.Clamp(y, 0, imgH - 1);
+
             size = Math.Min(size, Math.Min(imgW - x, imgH - y));
 
             return new Rectangle(
@@ -38,6 +42,7 @@ namespace Face.Api.Core.FacePipeline.Alignment
                 (int)MathF.Round(size)
             );
         }
+
 
     }
 }

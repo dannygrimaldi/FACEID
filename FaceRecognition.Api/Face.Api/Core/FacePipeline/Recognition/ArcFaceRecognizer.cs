@@ -14,7 +14,7 @@ namespace Face.Api.Core.FacePipeline.Recognition
             var modelPath = Path.Combine(
                 env.ContentRootPath,
                 "Models",
-                "arcfaceresnet100-8.onnx"
+                "w600k_r50.onnx"
             );
 
             if (!File.Exists(modelPath))

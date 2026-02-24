@@ -33,7 +33,11 @@ namespace Face.Api.Core.FacePipeline.Alignment
 
             using var mat = new Mat(image.Height, image.Width, MatType.CV_8UC3);
             Marshal.Copy(pixels, 0, mat.Data, pixels.Length);
+            //using var mat = new Mat(image.Height, image.Width, MatType.CV_8UC3, pixels);
 
+
+            // *** CORRECCIÓN 1: Convertir inmediatamente a BGR para que OpenCV sea feliz ***
+            Cv2.CvtColor(mat, mat, ColorConversionCodes.RGB2BGR);
             // 2. Estimar transformación (Similarity Transform)
             using var M = Cv2.EstimateAffinePartial2D(
                 InputArray.Create(srcPoints),
@@ -50,11 +54,12 @@ namespace Face.Api.Core.FacePipeline.Alignment
                 alignedMat,
                 M,
                 new OpenCvSharp.Size(112, 112),
-                InterpolationFlags.Linear,
+                InterpolationFlags.Cubic,
                 BorderTypes.Constant,
                 new Scalar(0, 0, 0)
             );
 
+            Cv2.CvtColor(alignedMat, alignedMat, ColorConversionCodes.BGR2RGB);
             // 4. Mat → ImageSharp
             byte[] outPixels = new byte[112 * 112 * 3];
             Marshal.Copy(alignedMat.Data, outPixels, 0, outPixels.Length);
