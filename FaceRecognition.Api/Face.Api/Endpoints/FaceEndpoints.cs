@@ -16,7 +16,7 @@ public static class FaceEndpoints
 {
     public static void MapFaceEndpoints(this WebApplication app)
     {
-        app.MapPost("/test/detect", TestDetectHandler).WithName("TestDetect");
+       //app.MapPost("/test/detect", TestDetectHandler).WithName("TestDetect");
         app.MapPost("/face/search", FaceSearchHandler).WithName("FaceSearch");
         app.MapPost("/face/register", FaceRegisterHandler).WithName("FaceRegister");
     }

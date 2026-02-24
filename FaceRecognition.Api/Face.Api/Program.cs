@@ -102,120 +102,7 @@ app.MapGet("/error", () => Results.Problem("An error occurred", statusCode: 500)
 // =====================================================
 // ENDPOINT
 // =====================================================
-app.MapPost("/test/detect", async (
-    HttpRequest request,
-    IFaceDetector detector,
-    IArcFaceRecognizer arcFaceRecognizer,
-    QdrantService qdrant,
-    IRateLimitService rateLimit
-) =>
-{
-    // Rate limiting básico
-    var clientId = request.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-    if (!rateLimit.AllowRequest(clientId, 10, TimeSpan.FromMinutes(1)))
-    {
-        return Results.StatusCode(429);
-    }
 
-    if (!request.HasFormContentType)
-        throw new InvalidImageException("Expected multipart/form-data");
-
-    var form = await request.ReadFormAsync();
-    var file = form.Files.FirstOrDefault();
-
-    if (file == null || file.Length == 0)
-        throw new InvalidImageException("No image uploaded");
-
-    // =====================================================
-    // 01️⃣ LOAD ORIGINAL
-    // =====================================================
-    using var ms = new MemoryStream();
-    await file.CopyToAsync(ms);
-
-    using var image = Image.Load<Rgb24>(ms.ToArray());
-
-    // =====================================================
-    // 02️⃣ DETECT FACE (SCRFD)
-    // =====================================================
-    var detection = detector.Detect(image);
-
-    if (detection.Score < 0.5f) // Umbral mínimo
-        throw new FaceNotDetectedException();
-
-    // Debug: bbox + landmarks
-    /*image.Clone(ctx =>
-    {
-        // bbox
-        ctx.Draw(
-            Color.Lime,
-            3,
-            new Rectangle(
-                detection.BoundingBox.X,
-                detection.BoundingBox.Y,
-                detection.BoundingBox.Width,
-                detection.BoundingBox.Height
-            )
-        );
-
-        // landmarks
-        foreach (var p in detection.Landmarks)
-            ctx.Fill(Color.Red, new Rectangle((int)p.X - 2, (int)p.Y - 2, 4, 4));
-    })
-    .Save(Path.Combine(FaceDebugDir, "02_detected.png"));*/
-
-    // =====================================================
-    // 03️⃣ FACE ALIGN (ArcFace-style, FULL IMAGE)
-    // =====================================================
-    using var aligned = FaceAligner.Align(image, detection.Landmarks);
-
-    // =====================================================
-    // 04️⃣ ARC FACE PREPROCESS (112x112 → tensor)
-    // =====================================================
-    var arcTensor = ArcFacePreprocessor.ToTensor(aligned);
-
-    // =====================================================
-    // 05️⃣ INFER EMBEDDING
-    // =====================================================
-    var embedding = arcFaceRecognizer.ExtractEmbedding(arcTensor);
-
-    // =====================================================
-    // 06️⃣ NORMALIZE EMBEDDING
-    // =====================================================
-    var normalized = EmbeddingUtils.L2Normalize(embedding);
-
-    // =====================================================
-    // 07️⃣ SAVE TO QDRANT
-    // =====================================================
-
-    await qdrant.UpsertAsync(
-        collection: "faces",
-        id: Guid.NewGuid().ToString(),
-        vector: normalized,
-        payload: new
-        {
-            employeeId = 789,
-            name = "Zendaya",
-            created = DateTime.UtcNow
-        }
-    );
-
-    // =====================================================
-    // RESPONSE
-    // =====================================================
-    return Results.Ok(new
-    {
-        boundingBox = new
-        {
-            x = detection.BoundingBox.X,
-            y = detection.BoundingBox.Y,
-            width = detection.BoundingBox.Width,
-            height = detection.BoundingBox.Height
-        },
-        score = detection.Score,
-        landmarks = detection.Landmarks.Select(p => new { p.X, p.Y }),
-        embeddingLength = normalized.Length
-    });
-});
 // Mapear endpoints en módulo separado
 app.MapFaceEndpoints();
 
@@ -291,7 +178,7 @@ app.MapFaceEndpoints();
 */
 
 
-
+/*
 app.MapPost("/face/search", async (
     HttpRequest request,
     IFaceDetector detector,
@@ -369,8 +256,8 @@ app.MapPost("/face/search", async (
         id = match.id,
         payload = match.payload
     });
-});
-
+});*/
+/*
 app.MapPost("/face/register", async (
     HttpRequest request,
     IFaceDetector detector,
@@ -454,7 +341,7 @@ app.MapPost("/face/register", async (
         name = name,
         vectorSize = normalized.Length
     });
-});
+});*/
 
 
 

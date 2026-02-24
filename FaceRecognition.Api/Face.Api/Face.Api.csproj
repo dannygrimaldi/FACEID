@@ -7,7 +7,12 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <PublishReadyToRun>false</PublishReadyToRun>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <Platforms>AnyCPU;x64</Platforms>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Content Remove="C:\Users\danny\.nuget\packages\faceaisharp.models.arcface.lresnet100e-ir\0.20220210.3\contentFiles\any\any\onnx\arcfaceresnet100-8.onnx" />
+  </ItemGroup>
 
   <!-- MODELOS -->
   <ItemGroup>
@@ -16,10 +21,6 @@
     </Content>
 
     <Content Include="Models\w600k_r50.onnx">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
-
-    <Content Include="Models\arcfaceresnet100-8.onnx">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
