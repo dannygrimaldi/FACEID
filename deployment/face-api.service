@@ -1,0 +1,19 @@
+[Unit]
+Description=Face Recognition API
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/face-api
+ExecStart=/usr/bin/dotnet /var/www/face-api/Face.Api.dll
+Restart=always
+RestartSec=10
+Environment=ASPNETCORE_ENVIRONMENT=Production
+Environment=QDRANT__BASEURL=http://127.0.0.1:6333/
+Environment=QDRANT__KEY=YOUR_QDRANT_API_KEY
+Environment=ASPNETCORE_URLS=http://0.0.0.0:5000
+
+[Install]
+WantedBy=multi-user.target

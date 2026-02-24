@@ -1,5 +1,22 @@
+bin/
+obj/
+.DS_Store
 .vs/
 FaceRecognition.Api/Face.Api/bin/
 FaceRecognition.Api/Face.Api/obj/
 *.onnx
-/FaceRecognition.Api/Face.Api - Copy
+Models/
+# Build
+bin/
+obj/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# Models (pesados)
+Models/
+
+# Logs
+*.log

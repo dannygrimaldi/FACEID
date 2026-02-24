@@ -2,18 +2,12 @@
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
+    <RuntimeIdentifiers>linux-x64;win-x64</RuntimeIdentifiers>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-
-    <!-- IMPORTANTE IIS -->
-    <Platforms>x64</Platforms>
-    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
-    <SelfContained>false</SelfContained>
-
     <PublishReadyToRun>false</PublishReadyToRun>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
-
 
   <!-- MODELOS -->
   <ItemGroup>
@@ -24,18 +18,20 @@
     <Content Include="Models\w600k_r50.onnx">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
-  </ItemGroup>
 
+    <Content Include="Models\arcfaceresnet100-8.onnx">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
 
   <!-- PAQUETES -->
   <ItemGroup>
-
     <PackageReference Include="FaceAiSharp.Models.ArcFace.LResNet100E-IR" Version="0.20220210.3" />
-
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.23" />
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="8.0.0" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.2" />
 
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.18.0" />
-
+    <!-- OpenCvSharp: core package only. Native runtimes are managed per-target at publish time or via native packages on the host. -->
     <PackageReference Include="OpenCvSharp4" Version="4.8.0.20230708" />
     <PackageReference Include="OpenCvSharp4.Extensions" Version="4.8.0.20230708" />
     <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.8.0.20230708" />
@@ -44,7 +40,6 @@
     <PackageReference Include="SixLabors.ImageSharp.Drawing" Version="2.1.7" />
 
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
-
   </ItemGroup>
 
 </Project>

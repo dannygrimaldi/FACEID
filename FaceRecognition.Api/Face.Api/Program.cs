@@ -1,13 +1,20 @@
-﻿using Face.Api.Core.FacePipeline;
+﻿using Microsoft.Extensions.Options;
+using Face.Api.Core.FacePipeline;
 using Face.Api.Core.FacePipeline.Alignment;
 using Face.Api.Core.FacePipeline.Detection;
 using Face.Api.Core.FacePipeline.Recognition;
 using Face.Api.Core.VectorDb;
+using Face.Api.Exceptions;
+using Face.Api.Middleware;
+using Face.Api.Options;
+using Face.Api.Services;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Logging;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Drawing.Processing;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
+using Face.Api.Endpoints;
 
 
 
@@ -15,48 +22,54 @@ using SixLabors.ImageSharp.Processing;
 var builder = WebApplication.CreateBuilder(args);
 
 // =====================================================
-// 🔎 DEBUG CONFIG (FIJO EN DISCO)
-// =====================================================
-//const string FaceDebugDir = @"C:\temp\face_debug";
-//Directory.CreateDirectory(FaceDebugDir);
-
-// =====================================================
 // Services
 // =====================================================
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// 🔹 Face Detection (SCRFD)
+// Configurar límites de request
+builder.Services.Configure<FormOptions>(options =>
+{
+    options.MultipartBodyLengthLimit = 10 * 1024 * 1024; // 10MB
+});
+
+// Configurar Qdrant options
+builder.Services.AddOptions<QdrantOptions>()
+    .BindConfiguration("Qdrant")
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
+// Health checks
+builder.Services.AddHealthChecks();
+
+// Rate limiting básico
+builder.Services.AddMemoryCache();
+builder.Services.AddSingleton<IRateLimitService, InMemoryRateLimitService>();
+
+// HttpClient factory para Qdrant
+builder.Services.AddHttpClient<QdrantService>((sp, client) =>
+{
+    var options = sp.GetRequiredService<IOptions<QdrantOptions>>().Value;
+    client.BaseAddress = new Uri(options.BaseUrl);
+    client.DefaultRequestHeaders.Add("api-key", options.Key);
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+
+// Face Detection (SCRFD)
 builder.Services.AddSingleton<IFaceDetector>(sp =>
 {
     var logger = sp.GetRequiredService<ILogger<ScrfdDetector>>();
     var env = sp.GetRequiredService<IWebHostEnvironment>();
 
-    var modelPath = Path.Combine(
-        env.ContentRootPath,
-        "Models",
-        "scrfd.onnx"
-    );
+    var modelPath = Path.Combine(env.ContentRootPath, "Models", "scrfd.onnx");
 
     return new ScrfdDetector(modelPath, logger);
 });
 
-
 builder.Services.AddSingleton<IArcFaceRecognizer, ArcFaceRecognizer>();
 
-
-// 0 Pipeline completo
+// Pipeline completo
 builder.Services.AddSingleton<FacePipeline>();
-
-builder.Services.AddHttpClient<QdrantService>((sp, c) =>
-{
-    var config = sp.GetRequiredService<IConfiguration>();
-    var url = config["Qdrant:BaseUrl"];
-    var key = config["Qdrant:key"];
-
-    c.BaseAddress = new Uri(url);
-    c.DefaultRequestHeaders.Add("api-key", key);
-});
 
 
 var app = builder.Build();
@@ -64,14 +77,27 @@ var app = builder.Build();
 // =====================================================
 // Middleware
 // =====================================================
+app.UseMiddleware<ExceptionHandlingMiddleware>();
+
 if (app.Environment.IsDevelopment())
 {
-    
+    app.UseSwagger();
+    app.UseSwaggerUI();
 }
-app.UseSwagger();
-app.UseSwaggerUI();
-app.UseDeveloperExceptionPage();
+else
+{
+    app.UseExceptionHandler("/error");
+    app.UseHsts();
+}
+
 app.UseHttpsRedirection();
+
+// Health check endpoint
+app.MapHealthChecks("/health");
+
+// Error endpoint for production
+app.MapGet("/error", () => Results.Problem("An error occurred", statusCode: 500))
+    .ExcludeFromDescription();
 
 // =====================================================
 // ENDPOINT
@@ -80,18 +106,25 @@ app.MapPost("/test/detect", async (
     HttpRequest request,
     IFaceDetector detector,
     IArcFaceRecognizer arcFaceRecognizer,
-    QdrantService qdrant
-
+    QdrantService qdrant,
+    IRateLimitService rateLimit
 ) =>
 {
+    // Rate limiting básico
+    var clientId = request.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+    if (!rateLimit.AllowRequest(clientId, 10, TimeSpan.FromMinutes(1)))
+    {
+        return Results.StatusCode(429);
+    }
+
     if (!request.HasFormContentType)
-        return Results.BadRequest("Expected multipart/form-data");
+        throw new InvalidImageException("Expected multipart/form-data");
 
     var form = await request.ReadFormAsync();
     var file = form.Files.FirstOrDefault();
 
     if (file == null || file.Length == 0)
-        return Results.BadRequest("No image uploaded");
+        throw new InvalidImageException("No image uploaded");
 
     // =====================================================
     // 01️⃣ LOAD ORIGINAL
@@ -99,13 +132,15 @@ app.MapPost("/test/detect", async (
     using var ms = new MemoryStream();
     await file.CopyToAsync(ms);
 
-    var image = Image.Load<Rgb24>(ms.ToArray());
-    //image.Save(Path.Combine(FaceDebugDir, "01_original.png"));
+    using var image = Image.Load<Rgb24>(ms.ToArray());
 
     // =====================================================
     // 02️⃣ DETECT FACE (SCRFD)
     // =====================================================
     var detection = detector.Detect(image);
+
+    if (detection.Score < 0.5f) // Umbral mínimo
+        throw new FaceNotDetectedException();
 
     // Debug: bbox + landmarks
     /*image.Clone(ctx =>
@@ -131,40 +166,15 @@ app.MapPost("/test/detect", async (
     // =====================================================
     // 03️⃣ FACE ALIGN (ArcFace-style, FULL IMAGE)
     // =====================================================
-    var aligned = FaceAligner.Align(
-        image,                 // imagen completa
-        detection.Landmarks    // landmarks absolutos
-    );
-
-    //aligned.Save(Path.Combine(FaceDebugDir, "03_aligned.png"));
+    using var aligned = FaceAligner.Align(image, detection.Landmarks);
 
     // =====================================================
     // 04️⃣ ARC FACE PREPROCESS (112x112 → tensor)
     // =====================================================
     var arcTensor = ArcFacePreprocessor.ToTensor(aligned);
 
-    // (opcional) debug visual: lo que ArcFace "ve"
-    //aligned.Save(Path.Combine(FaceDebugDir, "04_arcface_input.png"));
-
     // =====================================================
     // 05️⃣ INFER EMBEDDING
-  /*  var debugImage = new Image<Rgb24>(112, 112);
-    for (int y = 0; y < 112; y++)
-    {
-        for (int x = 0; x < 112; x++)
-        {
-            // Desnormalizar: asumiendo que la normalización es (p-127.5)/128
-            float r = arcTensor[0, 0, y, x] * 128f + 127.5f;
-            float g = arcTensor[0, 1, y, x] * 128f + 127.5f;
-            float b = arcTensor[0, 2, y, x] * 128f + 127.5f;
-            debugImage[x, y] = new Rgb24(
-                (byte)Math.Clamp(r, 0, 255),
-                (byte)Math.Clamp(g, 0, 255),
-                (byte)Math.Clamp(b, 0, 255)
-            );
-        }
-    }
-    debugImage.Save(Path.Combine(FaceDebugDir, "model_input.png"));*/
     // =====================================================
     var embedding = arcFaceRecognizer.ExtractEmbedding(arcTensor);
 
@@ -172,13 +182,6 @@ app.MapPost("/test/detect", async (
     // 06️⃣ NORMALIZE EMBEDDING
     // =====================================================
     var normalized = EmbeddingUtils.L2Normalize(embedding);
-
-   /* // Debug numérico
-    File.WriteAllText(
-        Path.Combine(FaceDebugDir, "05_embedding.txt"),
-        string.Join(",", normalized)
-    );
-*/
 
     // =====================================================
     // 07️⃣ SAVE TO QDRANT
@@ -213,6 +216,8 @@ app.MapPost("/test/detect", async (
         embeddingLength = normalized.Length
     });
 });
+// Mapear endpoints en módulo separado
+app.MapFaceEndpoints();
 
 /*app.MapPost("/face/search", async (
     HttpRequest request,
@@ -292,17 +297,25 @@ app.MapPost("/face/search", async (
     IFaceDetector detector,
     IArcFaceRecognizer arcFaceRecognizer,
     QdrantService qdrant,
-    IConfiguration config
+    IConfiguration config,
+    IRateLimitService rateLimit
 ) =>
 {
+    // Rate limiting básico
+    var clientId = request.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+    if (!rateLimit.AllowRequest(clientId, 10, TimeSpan.FromMinutes(1)))
+    {
+        return Results.StatusCode(429);
+    }
+
     if (!request.HasFormContentType)
-        return Results.BadRequest("Expected multipart/form-data");
+        throw new InvalidImageException("Expected multipart/form-data");
 
     var form = await request.ReadFormAsync();
     var file = form.Files.FirstOrDefault();
 
     if (file == null || file.Length == 0)
-        return Results.BadRequest("No image uploaded");
+        throw new InvalidImageException("No image uploaded");
 
     // ===============================
     // 1️⃣ LOAD IMAGE
@@ -310,41 +323,20 @@ app.MapPost("/face/search", async (
     using var ms = new MemoryStream();
     await file.CopyToAsync(ms);
 
-    var image = Image.Load<Rgb24>(ms.ToArray());
-    //image.Save(Path.Combine(FaceDebugDir, "search_01_original.png"));
+    using var image = Image.Load<Rgb24>(ms.ToArray());
 
     // ===============================
     // 2️⃣ DETECT
     // ===============================
     var detection = detector.Detect(image);
 
-   /* image.Clone(ctx =>
-    {
-        ctx.Draw(
-            Color.Lime,
-            3,
-            new Rectangle(
-                detection.BoundingBox.X,
-                detection.BoundingBox.Y,
-                detection.BoundingBox.Width,
-                detection.BoundingBox.Height
-            )
-        );
-
-        foreach (var p in detection.Landmarks)
-            ctx.Fill(Color.Red, new Rectangle((int)p.X - 2, (int)p.Y - 2, 4, 4));
-    })
-    .Save(Path.Combine(FaceDebugDir, "search_02_detect.png"));*/
+    if (detection.Score < 0.5f)
+        throw new FaceNotDetectedException();
 
     // ===============================
     // 3️⃣ ALIGN
     // ===============================
-    var aligned = FaceAligner.Align(
-        image,
-        detection.Landmarks
-    );
-
-    //aligned.Save(Path.Combine(FaceDebugDir, "search_03_aligned.png"));
+    using var aligned = FaceAligner.Align(image, detection.Landmarks);
 
     // ===============================
     // 4️⃣ ARC PREPROCESS
@@ -354,60 +346,21 @@ app.MapPost("/face/search", async (
     // ===============================
     // 5️⃣ EMBEDDING
     // ===============================
-   /* var debugImage = new Image<Rgb24>(112, 112);
-    for (int y = 0; y < 112; y++)
-    {
-        for (int x = 0; x < 112; x++)
-        {
-            // Desnormalizar: asumiendo que la normalización es (p-127.5)/128
-            float r = tensor[0, 0, y, x] * 128f + 127.5f;
-            float g = tensor[0, 1, y, x] * 128f + 127.5f;
-            float b = tensor[0, 2, y, x] * 128f + 127.5f;
-            debugImage[x, y] = new Rgb24(
-                (byte)Math.Clamp(r, 0, 255),
-                (byte)Math.Clamp(g, 0, 255),
-                (byte)Math.Clamp(b, 0, 255)
-            );
-        }
-    }
-    debugImage.Save(Path.Combine(FaceDebugDir, "model_input.png"));*/
     var embedding = arcFaceRecognizer.ExtractEmbedding(tensor);
 
     var normalized = EmbeddingUtils.L2Normalize(embedding);
 
-   /* File.WriteAllText(
-        Path.Combine(FaceDebugDir, "search_04_embedding.txt"),
-        string.Join(",", normalized)
-    );*/
-
     // ===============================
     // 6️⃣ QDRANT SEARCH
     // ===============================
-    var match = await qdrant.SearchAsync(
-       "faces",
-       normalized,
-       1
-   );
-
-
-
-
-    if (match == null)
-        return Results.Ok(new
-        {
-            found = false
-        });
+    var match = await qdrant.SearchAsync("faces", normalized, 1);
 
     double scoreMin = config.GetValue<double>("ScoreMin");
 
-
-    if (match.score < scoreMin)
-    {     return Results.Ok(new
-        {
-            found = false,
-        });
+    if (match == null || match.score < scoreMin)
+    {
+        return Results.Ok(new { found = false });
     }
-
 
     return Results.Ok(new
     {
@@ -422,24 +375,31 @@ app.MapPost("/face/register", async (
     HttpRequest request,
     IFaceDetector detector,
     IArcFaceRecognizer arcFaceRecognizer,
-    QdrantService qdrant
+    QdrantService qdrant,
+    IRateLimitService rateLimit
 ) =>
 {
+    // Rate limiting básico
+    var clientId = request.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+    if (!rateLimit.AllowRequest(clientId, 5, TimeSpan.FromMinutes(1)))
+    {
+        return Results.StatusCode(429);
+    }
+
     if (!request.HasFormContentType)
-        return Results.BadRequest("Expected multipart/form-data");
+        throw new InvalidImageException("Expected multipart/form-data");
 
     var form = await request.ReadFormAsync();
 
     var file = form.Files.FirstOrDefault();
-
     var employeeId = form["employeeId"].ToString();
     var name = form["name"].ToString();
 
     if (file == null || file.Length == 0)
-        return Results.BadRequest("No image uploaded");
+        throw new InvalidImageException("No image uploaded");
 
     if (string.IsNullOrWhiteSpace(employeeId))
-        return Results.BadRequest("employeeId required");
+        throw new InvalidImageException("employeeId required");
 
     // ===============================
     // LOAD IMAGE
@@ -447,42 +407,26 @@ app.MapPost("/face/register", async (
     using var ms = new MemoryStream();
     await file.CopyToAsync(ms);
 
-    var image = Image.Load<Rgb24>(ms.ToArray());
+    using var image = Image.Load<Rgb24>(ms.ToArray());
 
     // ===============================
     // DETECT
     // ===============================
     var detection = detector.Detect(image);
 
+    if (detection.Score < 0.5f)
+        throw new FaceNotDetectedException();
+
     // ===============================
     // ALIGN
     // ===============================
-    var aligned = FaceAligner.Align(
-        image,
-        detection.Landmarks
-    );
+    using var aligned = FaceAligner.Align(image, detection.Landmarks);
 
     // ===============================
     // EMBEDDING
     // ===============================
     var tensor = ArcFacePreprocessor.ToTensor(aligned);
-/*var debugImage = new Image<Rgb24>(112, 112);
-for (int y = 0; y < 112; y++)
-{
-    for (int x = 0; x < 112; x++)
-    {
-        // Desnormalizar: asumiendo que la normalización es (p-127.5)/128
-        float r = tensor[0, 0, y, x] * 128f + 127.5f;
-        float g = tensor[0, 1, y, x] * 128f + 127.5f;
-        float b = tensor[0, 2, y, x] * 128f + 127.5f;
-        debugImage[x, y] = new Rgb24(
-            (byte)Math.Clamp(r, 0, 255),
-            (byte)Math.Clamp(g, 0, 255),
-            (byte)Math.Clamp(b, 0, 255)
-        );
-    }
-}
-debugImage.Save(Path.Combine(FaceDebugDir, "model_input.png"));*/
+
     var embedding = arcFaceRecognizer.ExtractEmbedding(tensor);
 
     var normalized = EmbeddingUtils.L2Normalize(embedding);
