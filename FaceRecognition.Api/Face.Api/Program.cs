@@ -1,6 +1,5 @@
 ﻿using Face.Api.Core.FacePipeline;
 using Face.Api.Core.FacePipeline.Alignment;
-using Face.Api.Core.FacePipeline.Alignment;
 using Face.Api.Core.FacePipeline.Detection;
 using Face.Api.Core.FacePipeline.Recognition;
 using Face.Api.Core.VectorDb;
@@ -18,8 +17,8 @@ var builder = WebApplication.CreateBuilder(args);
 // =====================================================
 // 🔎 DEBUG CONFIG (FIJO EN DISCO)
 // =====================================================
-const string FaceDebugDir = @"C:\temp\face_debug";
-Directory.CreateDirectory(FaceDebugDir);
+//const string FaceDebugDir = @"C:\temp\face_debug";
+//Directory.CreateDirectory(FaceDebugDir);
 
 // =====================================================
 // Services
@@ -49,10 +48,16 @@ builder.Services.AddSingleton<IArcFaceRecognizer, ArcFaceRecognizer>();
 // 0 Pipeline completo
 builder.Services.AddSingleton<FacePipeline>();
 
-builder.Services.AddHttpClient<QdrantService>(c =>
+builder.Services.AddHttpClient<QdrantService>((sp, c) =>
 {
-    c.BaseAddress = new Uri("http://100.0.1.59:6333/");
+    var config = sp.GetRequiredService<IConfiguration>();
+    var url = config["Qdrant:BaseUrl"];
+    var key = config["Qdrant:key"];
+
+    c.BaseAddress = new Uri(url);
+    c.DefaultRequestHeaders.Add("api-key", key);
 });
+
 
 var app = builder.Build();
 
@@ -61,10 +66,11 @@ var app = builder.Build();
 // =====================================================
 if (app.Environment.IsDevelopment())
 {
-    app.UseSwagger();
-    app.UseSwaggerUI();
+    
 }
-
+app.UseSwagger();
+app.UseSwaggerUI();
+app.UseDeveloperExceptionPage();
 app.UseHttpsRedirection();
 
 // =====================================================
@@ -280,14 +286,13 @@ app.MapPost("/test/detect", async (
 */
 
 
-const float FACE_MATCH_THRESHOLD = 0.60f;
-const string COLLECTION_NAME = "faces";
 
 app.MapPost("/face/search", async (
     HttpRequest request,
     IFaceDetector detector,
     IArcFaceRecognizer arcFaceRecognizer,
-    QdrantService qdrant
+    QdrantService qdrant,
+    IConfiguration config
 ) =>
 {
     if (!request.HasFormContentType)
@@ -370,10 +375,10 @@ app.MapPost("/face/search", async (
 
     var normalized = EmbeddingUtils.L2Normalize(embedding);
 
-    File.WriteAllText(
+   /* File.WriteAllText(
         Path.Combine(FaceDebugDir, "search_04_embedding.txt"),
         string.Join(",", normalized)
-    );
+    );*/
 
     // ===============================
     // 6️⃣ QDRANT SEARCH
@@ -384,11 +389,25 @@ app.MapPost("/face/search", async (
        1
    );
 
+
+
+
     if (match == null)
         return Results.Ok(new
         {
             found = false
         });
+
+    double scoreMin = config.GetValue<double>("ScoreMin");
+
+
+    if (match.score < scoreMin)
+    {     return Results.Ok(new
+        {
+            found = false,
+        });
+    }
+
 
     return Results.Ok(new
     {
