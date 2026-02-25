@@ -20,3 +20,5 @@ Models/
 
 # Logs
 *.log
+publish/
+faceapi.tar
