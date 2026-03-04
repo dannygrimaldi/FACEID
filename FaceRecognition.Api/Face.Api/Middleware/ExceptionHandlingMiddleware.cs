@@ -22,12 +22,35 @@ public class ExceptionHandlingMiddleware
         }
         catch (DomainException ex)
         {
-            _logger.LogWarning(ex, "Domain exception occurred");
+            var request = context.Request;
+            var requestId = context.TraceIdentifier;
+            var clientIp = GetClientIp(context);
+
+            _logger.LogWarning(
+                ex,
+                "Domain exception handled. Type={ExceptionType} Method={Method} Path={Path} RequestId={RequestId} ClientIp={ClientIp}",
+                ex.GetType().Name,
+                request.Method,
+                request.Path.ToString(),
+                requestId,
+                clientIp);
+
             await HandleDomainExceptionAsync(context, ex);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "An unexpected error occurred");
+            var request = context.Request;
+            var requestId = context.TraceIdentifier;
+            var clientIp = GetClientIp(context);
+
+            _logger.LogError(
+                ex,
+                "Unhandled exception. Method={Method} Path={Path} RequestId={RequestId} ClientIp={ClientIp}",
+                request.Method,
+                request.Path.ToString(),
+                requestId,
+                clientIp);
+
             await HandleExceptionAsync(context, ex);
         }
     }
@@ -40,7 +63,8 @@ public class ExceptionHandlingMiddleware
         var result = new
         {
             error = exception.Message,
-            type = exception.GetType().Name
+            type = exception.GetType().Name,
+            requestId = context.TraceIdentifier
         };
 
         await context.Response.WriteAsJsonAsync(result);
@@ -54,9 +78,19 @@ public class ExceptionHandlingMiddleware
         var result = new
         {
             error = "An internal server error occurred",
-            type = "InternalServerError"
+            type = "InternalServerError",
+            requestId = context.TraceIdentifier
         };
 
         await context.Response.WriteAsJsonAsync(result);
+    }
+
+    private static string GetClientIp(HttpContext context)
+    {
+        var forwardedFor = context.Request.Headers["X-Forwarded-For"].FirstOrDefault();
+        if (!string.IsNullOrWhiteSpace(forwardedFor))
+            return forwardedFor.Split(',')[0].Trim();
+
+        return context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
     }
 }

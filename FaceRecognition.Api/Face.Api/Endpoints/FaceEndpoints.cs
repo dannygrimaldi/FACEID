@@ -4,13 +4,19 @@ using Face.Api.Core.FacePipeline.Recognition;
 using Face.Api.Core.FacePipeline.Alignment;
 using Face.Api.Core.VectorDb;
 using Face.Api.Exceptions;
+using Face.Api.Options;
 using Face.Api.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
+using System.Diagnostics;
+using System.Globalization;
 
 namespace Face.Api.Endpoints;
+
+public sealed class FaceEndpointsLogContext { }
 
 public static class FaceEndpoints
 {
@@ -26,11 +32,32 @@ public static class FaceEndpoints
         IFaceDetector detector,
         IArcFaceRecognizer arcFaceRecognizer,
         QdrantService qdrant,
-        IRateLimitService rateLimit)
+        IRateLimitService rateLimit,
+        IOptions<RateLimitOptions> rateLimitOptions,
+        ILogger<FaceEndpointsLogContext> logger)
     {
-        var clientId = request.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-        if (!rateLimit.AllowRequest(clientId, 10, TimeSpan.FromMinutes(1)))
-            return Results.StatusCode(429);
+        var clientId = GetClientId(request);
+        var limits = rateLimitOptions.Value;
+        var window = TimeSpan.FromSeconds(limits.WindowSeconds);
+        var stopwatch = Stopwatch.StartNew();
+
+        using var scope = logger.BeginScope(new Dictionary<string, object>
+        {
+            ["RequestId"] = request.HttpContext.TraceIdentifier,
+            ["Operation"] = "test-detect",
+            ["ClientId"] = clientId
+        });
+
+        logger.LogInformation("Test detect request started");
+
+        if (!rateLimit.AllowRequest(clientId, "test-detect", limits.TestDetectMaxRequests, window))
+            return TooManyRequests(
+                request.HttpContext,
+                logger,
+                "test-detect",
+                clientId,
+                limits.TestDetectMaxRequests,
+                window);
 
         if (!request.HasFormContentType)
             throw new InvalidImageException("Expected multipart/form-data");
@@ -61,6 +88,9 @@ public static class FaceEndpoints
             payload: new { employeeId = 789, name = "Zendaya", created = DateTime.UtcNow }
         );
 
+        stopwatch.Stop();
+        logger.LogInformation("Test detect request completed in {ElapsedMs:0.000} ms", stopwatch.Elapsed.TotalMilliseconds);
+
         return Results.Ok(new
         {
             boundingBox = new
@@ -82,11 +112,32 @@ public static class FaceEndpoints
         IArcFaceRecognizer arcFaceRecognizer,
         QdrantService qdrant,
         IConfiguration config,
-        IRateLimitService rateLimit)
+        IRateLimitService rateLimit,
+        IOptions<RateLimitOptions> rateLimitOptions,
+        ILogger<FaceEndpointsLogContext> logger)
     {
-        var clientId = request.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-        if (!rateLimit.AllowRequest(clientId, 10, TimeSpan.FromMinutes(1)))
-            return Results.StatusCode(429);
+        var clientId = GetClientId(request);
+        var limits = rateLimitOptions.Value;
+        var window = TimeSpan.FromSeconds(limits.WindowSeconds);
+        var stopwatch = Stopwatch.StartNew();
+
+        using var scope = logger.BeginScope(new Dictionary<string, object>
+        {
+            ["RequestId"] = request.HttpContext.TraceIdentifier,
+            ["Operation"] = "face-search",
+            ["ClientId"] = clientId
+        });
+
+        logger.LogInformation("Face search request started");
+
+        if (!rateLimit.AllowRequest(clientId, "face-search", limits.SearchMaxRequests, window))
+            return TooManyRequests(
+                request.HttpContext,
+                logger,
+                "face-search",
+                clientId,
+                limits.SearchMaxRequests,
+                window);
 
         if (!request.HasFormContentType)
             throw new InvalidImageException("Expected multipart/form-data");
@@ -114,7 +165,22 @@ public static class FaceEndpoints
         double scoreMin = config.GetValue<double>("ScoreMin");
 
         if (match == null || match.score < scoreMin)
+        {
+            stopwatch.Stop();
+            logger.LogInformation(
+                "Face search completed with no match in {ElapsedMs:0.000} ms (ScoreMin={ScoreMin:0.0000})",
+                stopwatch.Elapsed.TotalMilliseconds,
+                scoreMin);
+
             return Results.Ok(new { found = false });
+        }
+
+        stopwatch.Stop();
+        logger.LogInformation(
+            "Face search completed with match in {ElapsedMs:0.000} ms (Score={Score:0.0000}, Id={MatchId})",
+            stopwatch.Elapsed.TotalMilliseconds,
+            match.score,
+            match.id);
 
         return Results.Ok(new { found = true, score = match.score, id = match.id, payload = match.payload });
     }
@@ -124,11 +190,32 @@ public static class FaceEndpoints
         IFaceDetector detector,
         IArcFaceRecognizer arcFaceRecognizer,
         QdrantService qdrant,
-        IRateLimitService rateLimit)
+        IRateLimitService rateLimit,
+        IOptions<RateLimitOptions> rateLimitOptions,
+        ILogger<FaceEndpointsLogContext> logger)
     {
-        var clientId = request.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-        if (!rateLimit.AllowRequest(clientId, 5, TimeSpan.FromMinutes(1)))
-            return Results.StatusCode(429);
+        var clientId = GetClientId(request);
+        var limits = rateLimitOptions.Value;
+        var window = TimeSpan.FromSeconds(limits.WindowSeconds);
+        var stopwatch = Stopwatch.StartNew();
+
+        using var scope = logger.BeginScope(new Dictionary<string, object>
+        {
+            ["RequestId"] = request.HttpContext.TraceIdentifier,
+            ["Operation"] = "face-register",
+            ["ClientId"] = clientId
+        });
+
+        logger.LogInformation("Face register request started");
+
+        if (!rateLimit.AllowRequest(clientId, "face-register", limits.RegisterMaxRequests, window))
+            return TooManyRequests(
+                request.HttpContext,
+                logger,
+                "face-register",
+                clientId,
+                limits.RegisterMaxRequests,
+                window);
 
         if (!request.HasFormContentType)
             throw new InvalidImageException("Expected multipart/form-data");
@@ -166,6 +253,52 @@ public static class FaceEndpoints
             payload: payload
         );
 
+        stopwatch.Stop();
+        logger.LogInformation(
+            "Face register request completed in {ElapsedMs:0.000} ms (EmployeeId={EmployeeId})",
+            stopwatch.Elapsed.TotalMilliseconds,
+            employeeId);
+
         return Results.Ok(new { success = true, employeeId = employeeId, name = name, vectorSize = normalized.Length });
+    }
+
+    private static string GetClientId(HttpRequest request)
+    {
+        var forwardedFor = request.Headers["X-Forwarded-For"].FirstOrDefault();
+        if (!string.IsNullOrWhiteSpace(forwardedFor))
+            return forwardedFor.Split(',')[0].Trim();
+
+        return request.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+    }
+
+    private static IResult TooManyRequests(
+        HttpContext httpContext,
+        ILogger logger,
+        string scope,
+        string clientId,
+        int maxRequests,
+        TimeSpan window)
+    {
+        var retryAfterSeconds = (int)Math.Ceiling(window.TotalSeconds);
+        httpContext.Response.Headers.RetryAfter = retryAfterSeconds.ToString(CultureInfo.InvariantCulture);
+
+        logger.LogWarning(
+            "Rate limit exceeded. Scope={Scope} ClientId={ClientId} MaxRequests={MaxRequests} WindowSeconds={WindowSeconds} RequestId={RequestId}",
+            scope,
+            clientId,
+            maxRequests,
+            (int)window.TotalSeconds,
+            httpContext.TraceIdentifier);
+
+        return Results.Json(
+            new
+            {
+                error = "Too many requests",
+                retryAfterSeconds,
+                scope,
+                requestId = httpContext.TraceIdentifier
+            },
+            statusCode: StatusCodes.Status429TooManyRequests
+        );
     }
 }

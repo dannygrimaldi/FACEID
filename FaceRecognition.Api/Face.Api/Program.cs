@@ -10,6 +10,7 @@ using Face.Api.Options;
 using Face.Api.Services;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Console;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Drawing.Processing;
 using SixLabors.ImageSharp.PixelFormats;
@@ -20,6 +21,15 @@ using Face.Api.Endpoints;
 
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Logging.ClearProviders();
+builder.Logging.AddSimpleConsole(options =>
+{
+    options.SingleLine = true;
+    options.IncludeScopes = true;
+    options.TimestampFormat = "yyyy-MM-dd HH:mm:ss.fff ";
+    options.ColorBehavior = LoggerColorBehavior.Disabled;
+});
 
 // =====================================================
 // Services
@@ -36,6 +46,11 @@ builder.Services.Configure<FormOptions>(options =>
 // Configurar Qdrant options
 builder.Services.AddOptions<QdrantOptions>()
     .BindConfiguration("Qdrant")
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
+builder.Services.AddOptions<RateLimitOptions>()
+    .BindConfiguration("RateLimit")
     .ValidateDataAnnotations()
     .ValidateOnStart();
 
@@ -77,6 +92,7 @@ var app = builder.Build();
 // =====================================================
 // Middleware
 // =====================================================
+app.UseMiddleware<RequestLoggingMiddleware>();
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 
 if (app.Environment.IsDevelopment())
@@ -105,6 +121,15 @@ app.MapGet("/error", () => Results.Problem("An error occurred", statusCode: 500)
 
 // Mapear endpoints en módulo separado
 app.MapFaceEndpoints();
+
+var startupRateLimits = app.Services.GetRequiredService<IOptions<RateLimitOptions>>().Value;
+app.Logger.LogInformation(
+    "Face API configured. Environment={Environment} RateLimitWindowSeconds={WindowSeconds} SearchMaxRequests={SearchMaxRequests} RegisterMaxRequests={RegisterMaxRequests} TestDetectMaxRequests={TestDetectMaxRequests}",
+    app.Environment.EnvironmentName,
+    startupRateLimits.WindowSeconds,
+    startupRateLimits.SearchMaxRequests,
+    startupRateLimits.RegisterMaxRequests,
+    startupRateLimits.TestDetectMaxRequests);
 
 /*app.MapPost("/face/search", async (
     HttpRequest request,

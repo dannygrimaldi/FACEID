@@ -4,37 +4,43 @@ namespace Face.Api.Services;
 
 public interface IRateLimitService
 {
-    bool AllowRequest(string clientId, int maxRequests, TimeSpan window);
+    bool AllowRequest(string clientId, string scope, int maxRequests, TimeSpan window);
 }
 
 public class InMemoryRateLimitService : IRateLimitService
 {
     private readonly IMemoryCache _cache;
+    private static readonly object _sync = new();
 
     public InMemoryRateLimitService(IMemoryCache cache)
     {
         _cache = cache;
     }
 
-    public bool AllowRequest(string clientId, int maxRequests, TimeSpan window)
+    public bool AllowRequest(string clientId, string scope, int maxRequests, TimeSpan window)
     {
-        var key = $"rate_limit_{clientId}";
-        var requests = _cache.GetOrCreate<List<DateTime>>(key, entry =>
-        {
-            entry.AbsoluteExpirationRelativeToNow = window;
-            return new List<DateTime>();
-        });
+        var safeClientId = string.IsNullOrWhiteSpace(clientId) ? "unknown" : clientId;
+        var safeScope = string.IsNullOrWhiteSpace(scope) ? "default" : scope;
+        var key = $"rate_limit_{safeScope}_{safeClientId}";
 
-        // Limpiar requests expiradas
-        requests.RemoveAll(r => r < DateTime.UtcNow - window);
-
-        if (requests.Count >= maxRequests)
+        lock (_sync)
         {
-            return false;
+            var now = DateTime.UtcNow;
+            var requests = _cache.GetOrCreate(key, entry =>
+            {
+                entry.AbsoluteExpirationRelativeToNow = window;
+                return new List<DateTime>();
+            })!;
+
+            // Limpiar requests expiradas
+            requests.RemoveAll(r => r < now - window);
+
+            if (requests.Count >= maxRequests)
+                return false;
+
+            requests.Add(now);
+            _cache.Set(key, requests, window);
+            return true;
         }
-
-        requests.Add(DateTime.UtcNow);
-        _cache.Set(key, requests, window);
-        return true;
     }
 }

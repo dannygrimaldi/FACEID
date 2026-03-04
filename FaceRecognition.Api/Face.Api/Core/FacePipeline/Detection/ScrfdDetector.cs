@@ -27,6 +27,7 @@ namespace Face.Api.Core.FacePipeline.Detection
             };
 
             _session = new InferenceSession(modelPath, options);
+            _logger.LogInformation("SCRFD model loaded from {ModelPath}", modelPath);
         }
 
         public FaceDetection Detect(Image<Rgb24> image)
@@ -45,15 +46,18 @@ namespace Face.Api.Core.FacePipeline.Detection
             // 3️⃣ Ejecutar inferencia
             using var outputs = _session.Run(inputs);
 
-            // Debug opcional (esto SÍ es enumerable)
-            foreach (var o in outputs)
+            // Solo en Debug para no saturar logs de produccion
+            if (_logger.IsEnabled(LogLevel.Debug))
             {
-                var tensor = o.AsTensor<float>();
-                _logger.LogInformation(
-                    "SCRFD OUTPUT -> {Name} : [{Dims}]",
-                    o.Name,
-                    string.Join(",", tensor.Dimensions.ToArray())
-                );
+                foreach (var o in outputs)
+                {
+                    var tensor = o.AsTensor<float>();
+                    _logger.LogDebug(
+                        "SCRFD output {Name} dims [{Dims}]",
+                        o.Name,
+                        string.Join(",", tensor.Dimensions.ToArray())
+                    );
+                }
             }
 
             // 4️⃣ Post-procesar (undo letterbox)
