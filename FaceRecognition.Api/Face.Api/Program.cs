@@ -1,20 +1,15 @@
-﻿using Microsoft.Extensions.Options;
+﻿using Face.Api.Controllers;
 using Face.Api.Core.FacePipeline;
-using Face.Api.Core.FacePipeline.Alignment;
 using Face.Api.Core.FacePipeline.Detection;
 using Face.Api.Core.FacePipeline.Recognition;
 using Face.Api.Core.VectorDb;
-using Face.Api.Exceptions;
 using Face.Api.Middleware;
 using Face.Api.Options;
+using Face.Api.Repositories;
 using Face.Api.Services;
 using Microsoft.AspNetCore.Http.Features;
-using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging.Console;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Drawing.Processing;
-using SixLabors.ImageSharp.PixelFormats;
-using SixLabors.ImageSharp.Processing;
 using Face.Api.Endpoints;
 
 
@@ -54,6 +49,11 @@ builder.Services.AddOptions<RateLimitOptions>()
     .ValidateDataAnnotations()
     .ValidateOnStart();
 
+builder.Services.AddOptions<FaceRecognitionOptions>()
+    .BindConfiguration("FaceRecognition")
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
 // Health checks
 builder.Services.AddHealthChecks();
 
@@ -63,6 +63,14 @@ builder.Services.AddSingleton<IRateLimitService, InMemoryRateLimitService>();
 
 // HttpClient factory para Qdrant
 builder.Services.AddHttpClient<QdrantService>((sp, client) =>
+{
+    var options = sp.GetRequiredService<IOptions<QdrantOptions>>().Value;
+    client.BaseAddress = new Uri(options.BaseUrl);
+    client.DefaultRequestHeaders.Add("api-key", options.Key);
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+
+builder.Services.AddHttpClient<IQdrantRepository, QdrantRepository>((sp, client) =>
 {
     var options = sp.GetRequiredService<IOptions<QdrantOptions>>().Value;
     client.BaseAddress = new Uri(options.BaseUrl);
@@ -82,6 +90,9 @@ builder.Services.AddSingleton<IFaceDetector>(sp =>
 });
 
 builder.Services.AddSingleton<IArcFaceRecognizer, ArcFaceRecognizer>();
+builder.Services.AddScoped<IEmbeddingService, EmbeddingService>();
+builder.Services.AddScoped<IFaceRecognitionService, FaceRecognitionService>();
+builder.Services.AddScoped<FaceController>();
 
 // Pipeline completo
 builder.Services.AddSingleton<FacePipeline>();
@@ -111,8 +122,9 @@ app.UseHttpsRedirection();
 // Health check endpoint
 app.MapHealthChecks("/health");
 
-// Error endpoint for production
-app.MapGet("/error", () => Results.Problem("An error occurred", statusCode: 500))
+// Error endpoint for production (allow any HTTP method when ExceptionHandler re-executes)
+app.MapMethods("/error", new[] { "GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD" }, () =>
+        Results.Problem("An error occurred", statusCode: 500))
     .ExcludeFromDescription();
 
 // =====================================================
